@@ -377,6 +377,10 @@ struct common_params_speculative_ngram_cache {
 struct common_params_speculative {
     std::vector<enum common_speculative_type> types = { COMMON_SPECULATIVE_TYPE_NONE };
 
+    // experimental: accept a drafted token the target sampler would not pick, if its probability
+    // under the target distribution is at least this value (0.0 - disabled)
+    double fuzz = 0.0;
+
     double synth_len = -1.0;
     std::vector<double> synth_rates;
 

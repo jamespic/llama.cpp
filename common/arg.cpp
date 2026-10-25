@@ -4238,6 +4238,18 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
     ).set_spec().set_examples({LLAMA_EXAMPLE_SERVER, LLAMA_EXAMPLE_CLI}).set_env("LLAMA_ARG_SPEC_SYNTH_RATES"));
 
     add_opt(common_arg(
+        {"--spec-fuzz"}, "P",
+        "experimental: accept a drafted token the target sampler would not pick, if its target "
+        "probability is at least P (default: 0.0 - disabled)",
+        [](common_params & params, const std::string & value) {
+            const double p = std::stod(value);
+            if (p < 0.0 || p > 1.0) {
+                throw std::invalid_argument("invalid value, must be in [0, 1]");
+            }
+            params.speculative.fuzz = p;
+        }
+    ).set_spec().set_examples({LLAMA_EXAMPLE_SPECULATIVE, LLAMA_EXAMPLE_SERVER, LLAMA_EXAMPLE_CLI}).set_env("LLAMA_ARG_SPEC_FUZZ"));
+    add_opt(common_arg(
         {"--spec-draft-p-split", "--draft-p-split"}, "P",
         string_format("speculative decoding split probability (default: %.2f)", (double)params.speculative.draft.p_split),
         [](common_params & params, const std::string & value) {

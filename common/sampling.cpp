@@ -687,7 +687,35 @@ llama_token common_sampler_sample(struct common_sampler * gsmpl, struct llama_co
     return id;
 }
 
-std::vector<llama_token> common_sampler_sample_and_accept_n(struct common_sampler * gsmpl, struct llama_context * ctx, const std::vector<int> & idxs, const llama_tokens & draft, bool grammar_first) {
+// probability of a token under the target distribution, 0 if the grammar rejects it
+static float sampler_p_of(struct common_sampler * gsmpl, llama_token id) {
+    const auto * cur_p = common_sampler_get_candidates(gsmpl, true);
+
+    float p = 0.0f;
+    for (size_t k = 0; k < cur_p->size; ++k) {
+        if (cur_p->data[k].id == id) {
+            p = cur_p->data[k].p;
+            break;
+        }
+    }
+    if (p <= 0.0f) {
+        return 0.0f;
+    }
+
+    // the grammar is not applied to the candidate p values, check the token separately
+    if (grammar_should_apply(gsmpl)) {
+        llama_token_data       single = { id, 1.0f, 0.0f };
+        llama_token_data_array arr    = { &single, 1, -1, false };
+        llama_sampler_apply(gsmpl->grmr, &arr);
+        if (single.logit == -INFINITY) {
+            return 0.0f;
+        }
+    }
+
+    return p;
+}
+
+std::vector<llama_token> common_sampler_sample_and_accept_n(struct common_sampler * gsmpl, struct llama_context * ctx, const std::vector<int> & idxs, const llama_tokens & draft, bool grammar_first, float fuzz) {
     GGML_ASSERT(idxs.size() == draft.size() + 1 && "idxs.size() must be draft.size() + 1");
 
     std::vector<llama_token> result;
@@ -699,13 +727,19 @@ std::vector<llama_token> common_sampler_sample_and_accept_n(struct common_sample
     for (; i < draft.size(); i++) {
         const llama_token id = common_sampler_sample(gsmpl, ctx, idxs[i], grammar_first);
 
-        common_sampler_accept(gsmpl, id, true);
+        // optionally accept the draft token anyway when the target still gives it enough probability
+        llama_token id_acc = id;
+        if (fuzz > 0.0f && draft[i] != id && sampler_p_of(gsmpl, draft[i]) >= fuzz) {
+            id_acc = draft[i];
+        }
 
-        result.push_back(id);
+        common_sampler_accept(gsmpl, id_acc, true);
+
+        result.push_back(id_acc);
 
         // do not accept draft tokens after an EOG - they are not output but would stay in the context
         // on replay the last token is from the target and can be EOG, so a trailing EOG is still accepted
-        if (draft[i] != id || (llama_vocab_is_eog(vocab, id) && i + 1 < draft.size())) {
+        if (id_acc != draft[i] || (llama_vocab_is_eog(vocab, id_acc) && i + 1 < draft.size())) {
             break;
         }
     }
@@ -733,7 +767,7 @@ static float prob_of(const llama_token_data * data, size_t n, llama_token id) {
 // Accept a drafted token with probability min(1, p/q), else draw from norm(max(0, p - q)).
 // Preserves the target distribution exactly, and accepts more often than matching does when the
 // draft samples instead of taking its argmax.
-std::vector<llama_token> common_sampler_sample_and_accept_n_rejection(struct common_sampler * gsmpl, struct llama_context * ctx, const std::vector<int> & idxs, const llama_tokens & draft, const std::vector<std::vector<llama_token_data>> & draft_q, bool grammar_first) {
+std::vector<llama_token> common_sampler_sample_and_accept_n_rejection(struct common_sampler * gsmpl, struct llama_context * ctx, const std::vector<int> & idxs, const llama_tokens & draft, const std::vector<std::vector<llama_token_data>> & draft_q, bool grammar_first, float fuzz) {
     GGML_ASSERT(idxs.size()    == draft.size() + 1 && "idxs.size() must be draft.size() + 1");
     GGML_ASSERT(draft_q.size() == draft.size() && "draft_q must have one entry per draft token");
 
@@ -792,7 +826,9 @@ std::vector<llama_token> common_sampler_sample_and_accept_n_rejection(struct com
             }
         }
 
-        if (q_x > 0.0f && (p_x >= q_x || uni(gsmpl->rng) < p_x / q_x)) {
+        // fuzz is checked first, so it does not draw from the rejection stream
+        if ((fuzz > 0.0f && p_x >= fuzz) ||
+            (q_x > 0.0f && (p_x >= q_x || uni(gsmpl->rng) < p_x / q_x))) {
             common_sampler_accept(gsmpl, draft[i], true);
             result.push_back(draft[i]);
             continue;
